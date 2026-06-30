@@ -1,0 +1,36 @@
+---
+title: AnkerCode
+description: Local-first CRA & BSI compliance evidence for German software teams.
+template: splash
+hero:
+  tagline: Ruhe vor dem Audit. Scan your repo, get a German-language PDF your CTO actually understands — without a single line of source code leaving the machine.
+  image:
+    file: ../../assets/logo.png
+  actions:
+    - text: Get Started
+      link: /installation/
+      icon: right-arrow
+      variant: primary
+    - text: CLI Reference
+      link: /cli/check/
+      icon: open-book
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What AnkerCode does
+
+<CardGrid stagger>
+  <Card title="Local-First Scanning" icon="laptop">
+    Wraps Syft, Trivy, and Gitleaks. Runs entirely on your machine. Source code never leaves.
+  </Card>
+  <Card title="CycloneDX SBOM" icon="document">
+    Generates a compliant Software Bill of Materials in CycloneDX format, ready for BSI TR-03183.
+  </Card>
+  <Card title="German PDF Report" icon="star">
+    One command produces an audit-ready PDF in German — SBOM summary, CVEs by severity, license risk, VEX statements.
+  </Card>
+  <Card title="Triage Workflow" icon="pencil">
+    Decisions live in `ankercode.decisions.yaml` committed to your repo, making every report fully reproducible.
+  </Card>
+</CardGrid>
