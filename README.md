@@ -104,6 +104,58 @@ Every generated report contains:
 
 ---
 
+## CI Integration
+
+AnkerCode ships a Docker image so CI pipelines need zero local setup — no Node, no Syft, no Trivy, no Gitleaks.
+
+**GitHub Actions (copy-paste ready):**
+
+```yaml
+- name: AnkerCode Security Scan
+  run: |
+    docker run --rm \
+      -v ${{ github.workspace }}:/scan \
+      -e ANKERCODE_API_KEY=${{ secrets.ANKERCODE_API_KEY }} \
+      ghcr.io/ifya/ankercode:latest \
+      scan /scan \
+        --project "${{ github.event.repository.name }}" \
+        --output-dir /scan/.ankercode \
+        --fail-on high \
+        --quiet
+
+- uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: ankercode-${{ github.sha }}
+    path: .ankercode/
+    retention-days: 90
+```
+
+A full workflow with Maven cache, HTML report generation, and optional dashboard upload is at [`.github/workflows/ankercode.yml`](.github/workflows/ankercode.yml).
+
+**Scan flags for CI:**
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--fail-on critical\|high\|medium\|low\|any` | off | Exit 2 when findings meet or exceed threshold |
+| `--quiet` | off | Suppress human output; emit JSON summary to stdout |
+| `--output-dir <dir>` | `<path>/ankercode/` | Write findings + SBOM to a specific directory |
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | Clean — no findings at/above threshold |
+| `1` | Runtime error (bad path, scanner crashed) |
+| `2` | Policy gate — findings found at/above `--fail-on` threshold |
+
+**Docker image:** `ghcr.io/ifya/ankercode:latest` — `linux/amd64` + `linux/arm64`, ~450 MB.
+
+> **Maven projects:** mount your `~/.m2` cache to avoid Trivy hitting Maven Central rate limits:
+> `docker run -v ~/.m2:/root/.m2 ...`
+
+---
+
 ## Under the Hood
 
 AnkerCode wraps — never reimplements — the best open-source scanners:
@@ -180,6 +232,7 @@ AnkerCode produces *technical inputs* to compliance processes. It does not certi
 ## Roadmap
 
 - [x] Phase 0 — CLI + scanner adapters + German PDF report
+- [x] Phase 0 — Docker image + CI integration (--fail-on, --quiet, --output-dir, GitHub Actions workflow)
 - [ ] Phase 1 — Code-level analysis (Semgrep: deprecated APIs, security anti-patterns, file + line + fix) + history dashboard (Next.js + Supabase) + VS Code extension
 - [ ] Phase 2 — Policy engine + on-prem Docker package + audit trail
 
