@@ -1,32 +1,25 @@
-import type { ScanRun, Finding, PolicyResult, PolicyViolation } from "@ankercode/core";
+import type { ScanRun, Finding, PolicyResult } from "@ankercode/core";
 import type { Decisions } from "./decisions.js";
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const SEV_RANK: Record<Finding["severity"], number> = {
+  critical: 0, high: 1, medium: 2, low: 3, info: 4,
+};
+
 function severityLabel(s: Finding["severity"]): string {
-  const map: Record<Finding["severity"], string> = {
-    critical: "KRITISCH",
-    high:     "HOCH",
-    medium:   "MITTEL",
-    low:      "NIEDRIG",
-    info:     "INFO",
-  };
-  return map[s];
+  return { critical: "KRITISCH", high: "HOCH", medium: "MITTEL", low: "NIEDRIG", info: "INFO" }[s];
 }
 
 function severityDot(s: Finding["severity"]): string {
   const colors: Record<Finding["severity"], string> = {
-    critical: "#dc2626",
-    high:     "#ea580c",
-    medium:   "#d97706",
-    low:      "#2563eb",
-    info:     "#9ca3af",
+    critical: "#dc2626", high: "#ea580c", medium: "#d97706", low: "#2563eb", info: "#9ca3af",
   };
   return `<span style="color:${colors[s]};font-size:1.1em">●</span>`;
 }
 
 function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("de-DE", {
-    day: "2-digit", month: "2-digit", year: "numeric",
-  });
+  return new Date(iso).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 function escapeMarkdown(s: string): string {
@@ -34,19 +27,89 @@ function escapeMarkdown(s: string): string {
 }
 
 function sortedFindings(findings: Finding[]): Finding[] {
-  const order: Record<Finding["severity"], number> = {
-    critical: 0, high: 1, medium: 2, low: 3, info: 4,
-  };
-  return [...findings].sort((a, b) => order[a.severity] - order[b.severity]);
+  return [...findings].sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity]);
 }
 
-function policyActionLabel(action: PolicyViolation["action"]): string {
-  return action === "block" ? "BLOCKIERT" : "WARNUNG";
+// ── Action-group builder ──────────────────────────────────────────────────────
+// Groups policy-flagged findings by package@version for the Maßnahmenplan.
+
+type ActionGroup = {
+  packageName:  string;
+  version:      string;
+  cves:         string[];
+  fixAction:    string;
+  maxSeverity:  Finding["severity"];
+  policyAction: "block" | "warn";
+};
+
+type SecretEntry = {
+  message:      string;
+  policyAction: "block" | "warn";
+};
+
+type ActionPlan = {
+  secrets: SecretEntry[];
+  upgrades: ActionGroup[];
+};
+
+function buildActionPlan(findings: Finding[], policyResult: PolicyResult): ActionPlan {
+  const findingById = new Map(findings.map((f) => [f.id, f]));
+  const pkgGroups   = new Map<string, ActionGroup>();
+  const secrets: SecretEntry[] = [];
+
+  for (const entry of [...policyResult.violations, ...policyResult.warnings]) {
+    const f = findingById.get(entry.findingId);
+    if (!f) continue;
+
+    if (f.type === "secret") {
+      secrets.push({ message: entry.message, policyAction: entry.action as "block" | "warn" });
+      continue;
+    }
+
+    if (f.type !== "vulnerability") continue;
+
+    const pkgName = f.package?.name    ?? "unknown";
+    const pkgVer  = f.package?.version ?? "?";
+    const key     = `${pkgName}@${pkgVer}`;
+    const cve     = f.cveId ?? null;
+
+    const existing = pkgGroups.get(key);
+    if (existing) {
+      if (cve && !existing.cves.includes(cve)) existing.cves.push(cve);
+      if (entry.action === "block") existing.policyAction = "block";
+      if (SEV_RANK[f.severity] < SEV_RANK[existing.maxSeverity]) {
+        existing.maxSeverity = f.severity;
+        // Use the fix recommendation from the most severe CVE
+        if (f.recommendedAction) existing.fixAction = f.recommendedAction;
+      }
+    } else {
+      pkgGroups.set(key, {
+        packageName:  pkgName,
+        version:      pkgVer,
+        cves:         cve ? [cve] : [],
+        fixAction:    f.recommendedAction ?? "kein Fix verfügbar",
+        maxSeverity:  f.severity,
+        policyAction: entry.action as "block" | "warn",
+      });
+    }
+  }
+
+  // Sort: blocks first, then by severity, then alphabetically
+  const upgrades = [...pkgGroups.values()].sort((a, b) => {
+    if (a.policyAction !== b.policyAction) return a.policyAction === "block" ? -1 : 1;
+    const sevDiff = SEV_RANK[a.maxSeverity] - SEV_RANK[b.maxSeverity];
+    if (sevDiff !== 0) return sevDiff;
+    return a.packageName.localeCompare(b.packageName);
+  });
+
+  return { secrets, upgrades };
 }
+
+// ── Main render ───────────────────────────────────────────────────────────────
 
 export function renderReportMarkdown(
-  scanRun:      ScanRun,
-  decisions:    Decisions,
+  scanRun:       ScanRun,
+  decisions:     Decisions,
   policyResult?: PolicyResult,
 ): string {
   const vulnFindings    = sortedFindings(scanRun.findings.filter((f) => f.type === "vulnerability"));
@@ -59,27 +122,24 @@ export function renderReportMarkdown(
   const openVulns = vulnFindings.filter(
     (f) => !acceptedIds.has(f.id) && vexMap.get(f.id)?.status !== "not_affected",
   );
-  const critHigh = openVulns.filter(
-    (f) => f.severity === "critical" || f.severity === "high",
-  );
+  const critHigh = openVulns.filter((f) => f.severity === "critical" || f.severity === "high");
 
   const scannerVersionLines = Object.entries(scanRun.scannerVersions)
     .map(([k, v]) => `| ${escapeMarkdown(k)} | ${escapeMarkdown(v)} |`)
     .join("\n");
 
-  // Section counter — increments when Policy-Bewertung is present
   let sec = 0;
   const S = () => `${++sec}.`;
 
   const lines: string[] = [];
 
-  // ── Header ─────────────────────────────────────────────────────────────────
+  // ── Header ────────────────────────────────────────────────────────────────
   lines.push(`% CRA Readiness Evidence Report`);
   lines.push(`% ${escapeMarkdown(scanRun.project)}`);
   lines.push(`% ${formatDate(scanRun.createdAt)}`);
   lines.push("");
 
-  // ── 1. Zusammenfassung ─────────────────────────────────────────────────────
+  // ── 1. Zusammenfassung ────────────────────────────────────────────────────
   lines.push(`# ${S()} Zusammenfassung`);
   lines.push("");
   lines.push(
@@ -94,60 +154,106 @@ export function renderReportMarkdown(
   lines.push(`| Scan-Datum | ${formatDate(scanRun.createdAt)} |`);
   if (scanRun.branch)    lines.push(`| Branch | \`${escapeMarkdown(scanRun.branch)}\` |`);
   if (scanRun.commitSha) lines.push(`| Commit | \`${escapeMarkdown(scanRun.commitSha.slice(0, 12))}\` |`);
-  lines.push(`| Gefundene Schwachstellen (gesamt) | ${vulnFindings.length} |`);
-  lines.push(`| Davon Kritisch/Hoch (offen) | ${critHigh.length} |`);
+  lines.push(`| Schwachstellen (gesamt) | ${vulnFindings.length} |`);
+  lines.push(`| Kritisch/Hoch (offen) | ${critHigh.length} |`);
   lines.push(`| Secrets-Treffer | ${secretFindings.length} |`);
   lines.push(`| Lizenzen erfasst | ${licenseFindings.length} |`);
   lines.push(`| Akzeptierte Risiken | ${decisions.riskAcceptances?.length ?? 0} |`);
   if (policyResult) {
-    const policyStatus = policyResult.passed
-      ? "✓ BESTANDEN"
-      : `✗ NICHT BESTANDEN (${policyResult.violations.length} Verstoß/Verstöße)`;
-    lines.push(`| Policy-Status | ${policyStatus} |`);
-    if (policyResult.warnings.length > 0) {
-      lines.push(`| Policy-Warnungen | ${policyResult.warnings.length} |`);
-    }
+    const st = policyResult.passed ? "✓ BESTANDEN" : `✗ NICHT BESTANDEN (${policyResult.violations.length} Verstoß/Verstöße)`;
+    lines.push(`| Policy-Status | ${st} |`);
+    if (policyResult.warnings.length > 0) lines.push(`| Policy-Warnungen | ${policyResult.warnings.length} |`);
   }
   lines.push("");
 
-  // ── 2. Policy-Bewertung (optional) ────────────────────────────────────────
+  // ── 2. Policy-Bewertung ───────────────────────────────────────────────────
   if (policyResult) {
     lines.push(`# ${S()} Policy-Bewertung`);
     lines.push("");
 
-    const statusIcon = policyResult.passed ? "✓" : "✗";
-    const statusText = policyResult.passed ? "BESTANDEN" : "NICHT BESTANDEN";
-    const summary = [
-      `${policyResult.violations.length} Verstoß/Verstöße`,
-      `${policyResult.warnings.length} Warnung(en)`,
-    ].join(", ");
-
-    lines.push(`**${statusIcon} ${statusText}** — ${summary}`);
+    const icon   = policyResult.passed ? "✓" : "✗";
+    const status = policyResult.passed ? "BESTANDEN" : "NICHT BESTANDEN";
+    lines.push(`**${icon} ${status}**`);
     lines.push("");
 
-    const allEntries = [...policyResult.violations, ...policyResult.warnings];
-    if (allEntries.length === 0) {
+    if (policyResult.violations.length === 0 && policyResult.warnings.length === 0) {
       lines.push("*Alle Regeln eingehalten. Keine Verstöße oder Warnungen.*");
     } else {
-      lines.push("| Regel-ID | Befund | Aktion |");
-      lines.push("|---|---|---|");
-      for (const entry of allEntries) {
+      // Show only blockers here — warnings go in Maßnahmenplan
+      if (policyResult.violations.length > 0) {
+        lines.push(`**${policyResult.violations.length} blockierende Verstoß/Verstöße — CI-Gate aktiv:**`);
+        lines.push("");
+        lines.push("| Regel | Befund |");
+        lines.push("|---|---|");
+        for (const v of policyResult.violations) {
+          lines.push(`| \`${escapeMarkdown(v.ruleId)}\` | ${escapeMarkdown(v.message)} |`);
+        }
+        lines.push("");
+      } else {
+        lines.push("*Keine blockierenden Verstöße.*");
+        lines.push("");
+      }
+      if (policyResult.warnings.length > 0) {
         lines.push(
-          `| \`${escapeMarkdown(entry.ruleId)}\` ` +
-          `| ${escapeMarkdown(entry.message)} ` +
-          `| **${policyActionLabel(entry.action)}** |`,
+          `> **${policyResult.warnings.length} Warnungen** (nicht blockierend) — ` +
+          `priorisierte Maßnahmen siehe Abschnitt Maßnahmenplan.`,
         );
+        lines.push("");
       }
     }
-    lines.push("");
-    lines.push(
-      `> Grundlage: \`${escapeMarkdown(policyResult.policyFile)}\` ` +
-      `— Ausgewertet: ${formatDate(policyResult.evaluatedAt)}`,
-    );
+    lines.push(`> Grundlage: \`${escapeMarkdown(policyResult.policyFile)}\` — Ausgewertet: ${formatDate(policyResult.evaluatedAt)}`);
     lines.push("");
   }
 
-  // ── SBOM-Zusammenfassung ───────────────────────────────────────────────────
+  // ── 3. Maßnahmenplan ──────────────────────────────────────────────────────
+  if (policyResult && (policyResult.violations.length > 0 || policyResult.warnings.length > 0)) {
+    const plan = buildActionPlan(scanRun.findings, policyResult);
+    lines.push(`# ${S()} Maßnahmenplan`);
+    lines.push("");
+    lines.push(
+      "Priorisierte Handlungsempfehlungen. Jede Zeile entspricht einem konkreten Schritt — " +
+      "blockierende Verstöße zuerst, dann Warnungen. Vollständige CVE-Details in Abschnitt Schwachstellen.",
+    );
+    lines.push("");
+
+    // Secrets block
+    if (plan.secrets.length > 0) {
+      lines.push("## Secrets rotieren");
+      lines.push("");
+      lines.push("| Priorität | Secret |");
+      lines.push("|---|---|");
+      for (const s of plan.secrets) {
+        const prio = s.policyAction === "block" ? "**🔴 SOFORT**" : "🟡 Warnung";
+        lines.push(`| ${prio} | ${escapeMarkdown(s.message)} |`);
+      }
+      lines.push("");
+    }
+
+    // Package upgrades block
+    if (plan.upgrades.length > 0) {
+      const blockCount = plan.upgrades.filter((u) => u.policyAction === "block").length;
+      const warnCount  = plan.upgrades.filter((u) => u.policyAction === "warn").length;
+      lines.push(`## Paket-Upgrades (${blockCount} blockierend · ${warnCount} Warnungen)`);
+      lines.push("");
+      lines.push("| Prio | Paket | Aktuell | Upgrade auf | CVEs | Schwere |");
+      lines.push("|---|---|---|---|---|---|");
+      for (const g of plan.upgrades) {
+        const prio   = g.policyAction === "block" ? "**🔴**" : "🟡";
+        const cveCnt = g.cves.length > 0 ? String(g.cves.length) : "—";
+        lines.push(
+          `| ${prio} ` +
+          `| \`${escapeMarkdown(g.packageName)}\` ` +
+          `| ${escapeMarkdown(g.version)} ` +
+          `| ${escapeMarkdown(g.fixAction)} ` +
+          `| ${cveCnt} ` +
+          `| ${severityLabel(g.maxSeverity)} |`,
+        );
+      }
+      lines.push("");
+    }
+  }
+
+  // ── SBOM-Zusammenfassung ──────────────────────────────────────────────────
   lines.push(`# ${S()} SBOM-Zusammenfassung`);
   lines.push("");
   if (scanRun.sbomRef) {
@@ -166,18 +272,14 @@ export function renderReportMarkdown(
   }
   lines.push("");
 
-  // ── Schwachstellen ─────────────────────────────────────────────────────────
+  // ── Schwachstellen ────────────────────────────────────────────────────────
   lines.push(`# ${S()} Schwachstellen`);
   lines.push("");
   if (openVulns.length === 0) {
     lines.push("*Keine offenen Schwachstellen gefunden.*");
   } else {
     const bySeverity: Array<[Finding["severity"], string]> = [
-      ["critical", "Kritisch"],
-      ["high",     "Hoch"],
-      ["medium",   "Mittel"],
-      ["low",      "Niedrig"],
-      ["info",     "Info"],
+      ["critical", "Kritisch"], ["high", "Hoch"], ["medium", "Mittel"], ["low", "Niedrig"], ["info", "Info"],
     ];
     for (const [sev, label] of bySeverity) {
       const group = openVulns.filter((f) => f.severity === sev);
@@ -199,7 +301,30 @@ export function renderReportMarkdown(
     }
   }
 
-  // ── Lizenz-Risiko ──────────────────────────────────────────────────────────
+  // ── Secrets ───────────────────────────────────────────────────────────────
+  if (secretFindings.length > 0) {
+    lines.push(`# ${S()} Secrets / Leaked Credentials`);
+    lines.push("");
+    lines.push("| Schwere | Typ | Fundort | Status |");
+    lines.push("|---|---|---|---|");
+    for (const f of secretFindings) {
+      const loc = f.source.manifest
+        ? (() => {
+            const parts = f.source.manifest.replace(/\\/g, "/").split("/");
+            return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : f.source.manifest;
+          })()
+        : "—";
+      lines.push(
+        `| ${severityLabel(f.severity)} ` +
+        `| ${escapeMarkdown(f.source.ruleId ?? "secret")} ` +
+        `| \`${escapeMarkdown(loc)}\` ` +
+        `| ${escapeMarkdown(f.status)} |`,
+      );
+    }
+    lines.push("");
+  }
+
+  // ── Lizenz-Risiko ─────────────────────────────────────────────────────────
   lines.push(`# ${S()} Lizenz-Risiko`);
   lines.push("");
   if (licenseFindings.length === 0) {
@@ -232,9 +357,7 @@ export function renderReportMarkdown(
   lines.push(`# ${S()} Vulnerability-Handling-Nachweis`);
   lines.push("");
   if (vexMap.size === 0) {
-    lines.push(
-      "*Keine VEX-Aussagen erfasst. Tragen Sie Entscheidungen in `ankercode.decisions.yaml` ein.*",
-    );
+    lines.push("*Keine VEX-Aussagen erfasst. Tragen Sie Entscheidungen in `ankercode.decisions.yaml` ein.*");
   } else {
     lines.push("| Finding-ID | Status | Begründung | Verantwortlich |");
     lines.push("|---|---|---|---|");
@@ -247,7 +370,7 @@ export function renderReportMarkdown(
   }
   lines.push("");
 
-  // ── Akzeptierte Risiken ────────────────────────────────────────────────────
+  // ── Akzeptierte Risiken ───────────────────────────────────────────────────
   lines.push(`# ${S()} Akzeptierte Risiken`);
   lines.push("");
   if (!decisions.riskAcceptances?.length) {
@@ -264,7 +387,7 @@ export function renderReportMarkdown(
   }
   lines.push("");
 
-  // ── Methodik und Scanner-Versionen ─────────────────────────────────────────
+  // ── Methodik ──────────────────────────────────────────────────────────────
   lines.push(`# ${S()} Methodik und Scanner-Versionen`);
   lines.push("");
   lines.push(
