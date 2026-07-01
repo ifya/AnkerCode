@@ -6,6 +6,7 @@ import { runCheck } from "./commands/check.js";
 import { runUpgrade } from "./commands/upgrade.js";
 import { runUpload } from "./commands/upload.js";
 import { runConfig } from "./commands/config-cmd.js";
+import { runPolicyCheck } from "./commands/policy.js";
 
 const program = new Command();
 
@@ -93,6 +94,27 @@ program
     opts: { project?: string; pdf: boolean; html: boolean; docx: boolean },
   ) => {
     await runCheck(targetPath ?? ".", opts);
+  });
+
+const policy = program
+  .command("policy")
+  .description("Policy management — define and evaluate compliance rules");
+
+policy
+  .command("check [path]")
+  .description("Evaluate findings against ankercode.policy.yaml")
+  .option("--policy <file>",   "Policy file override (default: ankercode.policy.yaml)")
+  .option("--quiet",            "Suppress human output; print JSON summary to stdout")
+  .option("--fail-on-warn",    "Also exit 2 on warnings (default: only on violations)")
+  .action(async (
+    targetPath: string | undefined,
+    opts: { policy?: string; quiet?: boolean; failOnWarn?: boolean },
+  ) => {
+    const policyOpts: import("./commands/policy.js").PolicyCheckOptions = {};
+    if (opts.policy    !== undefined) policyOpts.policy     = opts.policy;
+    if (opts.quiet)                   policyOpts.quiet       = true;
+    if (opts.failOnWarn)              policyOpts.failOnWarn  = true;
+    await runPolicyCheck(targetPath ?? ".", policyOpts);
   });
 
 program

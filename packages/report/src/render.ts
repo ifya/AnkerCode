@@ -5,7 +5,8 @@ import { join } from "path";
 import { homedir } from "os";
 import { tmpdir } from "os";
 import { randomUUID } from "crypto";
-import type { ScanRun } from "@ankercode/core";
+import type { ScanRun, PolicyResult } from "@ankercode/core";
+import { PolicyResultSchema } from "@ankercode/core";
 import { renderReportMarkdown } from "./template.js";
 import { reportCss } from "./css.js";
 import { loadDecisions } from "./decisions.js";
@@ -28,11 +29,22 @@ export async function renderReport(
 ): Promise<void> {
   const scanRun: ScanRun = JSON.parse(readFileSync(findingsPath, "utf8"));
 
-  // decisions file lives at <project-root>/ankercode.decisions.yaml
-  const projectRoot = join(findingsPath, "..", "..");
-  const decisions = loadDecisions(projectRoot);
+  // decisions and policy-result live alongside findings.json
+  const outputDir   = join(findingsPath, "..");
+  const projectRoot = join(outputDir, "..");
+  const decisions   = loadDecisions(projectRoot);
 
-  const markdown = renderReportMarkdown(scanRun, decisions);
+  // Pick up policy result written by `ankercode policy check` if present
+  const policyResultPath = join(outputDir, "policy-result.json");
+  let policyResult: PolicyResult | undefined;
+  if (existsSync(policyResultPath)) {
+    const parsed = PolicyResultSchema.safeParse(
+      JSON.parse(readFileSync(policyResultPath, "utf8")),
+    );
+    if (parsed.success) policyResult = parsed.data;
+  }
+
+  const markdown = renderReportMarkdown(scanRun, decisions, policyResult);
 
   const mdTmp = join(tmpdir(), `ankercode-report-${randomUUID()}.md`);
   const cssTmp = join(tmpdir(), `ankercode-report-${randomUUID()}.css`);
