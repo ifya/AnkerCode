@@ -56,8 +56,8 @@ Built for **German Mittelstand** software teams — Maschinenbau, IoT/Industrie 
 **Requirements:** Node.js ≥ 18, Git
 
 ```zsh
-git clone https://github.com/ifyagaming/ankercode.git
-cd ankercode
+git clone https://github.com/ifya/AnkerCode.git
+cd AnkerCode
 ./install.sh
 ```
 
@@ -101,6 +101,102 @@ Every generated report contains:
 | 5 | **Vulnerability-Handling-Nachweis** | VEX statements — your signed decisions per CVE |
 | 6 | **Akzeptierte Risiken** | Risk acceptances with author, reason, expiry |
 | 7 | **Methodik & Scanner-Versionen** | Pinned scanner versions for reproducibility + disclaimer |
+
+---
+
+## CI Integration
+
+AnkerCode ships a Docker image so CI pipelines need zero local setup — no Node, no Syft, no Trivy, no Gitleaks.
+
+**GitHub Actions (copy-paste ready):**
+
+```yaml
+- name: AnkerCode Security Scan
+  run: |
+    docker run --rm \
+      -v ${{ github.workspace }}:/scan \
+      -e ANKERCODE_API_KEY=${{ secrets.ANKERCODE_API_KEY }} \
+      ghcr.io/ifya/ankercode:latest \
+      scan /scan \
+        --project "${{ github.event.repository.name }}" \
+        --output-dir /scan/.ankercode \
+        --fail-on high \
+        --quiet
+
+- uses: actions/upload-artifact@v4
+  if: always()
+  with:
+    name: ankercode-${{ github.sha }}
+    path: .ankercode/
+    retention-days: 90
+```
+
+A full workflow with Maven cache, HTML report generation, and optional dashboard upload is at [`.github/workflows/ankercode.yml`](.github/workflows/ankercode.yml).
+
+**Scan flags for CI:**
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--fail-on critical\|high\|medium\|low\|any` | off | Exit 2 when findings meet or exceed threshold |
+| `--quiet` | off | Suppress human output; emit JSON summary to stdout |
+| `--output-dir <dir>` | `<path>/ankercode/` | Write findings + SBOM to a specific directory |
+
+**Exit codes:**
+
+| Code | Meaning |
+|---|---|
+| `0` | Clean — no findings at/above threshold |
+| `1` | Runtime error (bad path, scanner crashed) |
+| `2` | Policy gate — findings found at/above `--fail-on` threshold |
+
+**Docker image:** `ghcr.io/ifya/ankercode:latest` — `linux/amd64` + `linux/arm64`, ~450 MB.
+
+> **Maven projects:** mount your `~/.m2` cache to avoid Trivy hitting Maven Central rate limits:
+> `docker run -v ~/.m2:/root/.m2 ...`
+
+---
+
+## Air-Gap / Offline Use
+
+AnkerCode's Docker image is lean (~450 MB) and downloads the Trivy vulnerability database on first use. For air-gapped or firewall-restricted environments, pre-seed the database once in a connected environment and carry it across.
+
+**Step 1 — seed the Trivy database (connected machine)**
+
+```bash
+mkdir -p ~/.cache/trivy
+
+# Vulnerability database (~55 MB)
+docker run --rm \
+  -v ~/.cache/trivy:/root/.cache/trivy \
+  ghcr.io/ifya/ankercode:latest \
+  trivy fs --download-db-only /tmp
+
+# Java artifact index (~150 MB) — needed for Java/Maven projects
+docker run --rm \
+  -v ~/.cache/trivy:/root/.cache/trivy \
+  ghcr.io/ifya/ankercode:latest \
+  trivy fs --download-java-db-only /tmp
+```
+
+**Step 2 — transfer the cache to the air-gapped machine**
+
+Copy `~/.cache/trivy/` to the target machine (USB, internal artifact store, etc.).
+
+**Step 3 — run offline**
+
+```bash
+docker run --rm \
+  -v /path/to/repo:/scan \
+  -v ~/.cache/trivy:/root/.cache/trivy \
+  -e TRIVY_SKIP_DB_UPDATE=true \
+  -e TRIVY_SKIP_JAVA_DB_UPDATE=true \
+  ghcr.io/ifya/ankercode:latest \
+  scan /scan --project myproduct
+```
+
+The two environment variables tell Trivy to use the mounted cache as-is and make zero outbound calls. The Trivy DB is roughly 200 MB total; refresh it whenever your security team wants a newer advisory snapshot.
+
+> **Java/Maven projects in air-gap:** Trivy also downloads parent POM files from Maven Central to resolve the transitive dependency tree. Pre-warm `~/.m2` on a connected machine with `mvn dependency:resolve`, then mount it: `-v ~/.m2:/root/.m2`.
 
 ---
 
@@ -161,7 +257,8 @@ ankercode/
 - **Source code never leaves your machine.** Only normalized findings metadata, SBOMs, and hashes are involved — and only locally.
 - **No telemetry.** No analytics, no phone-home, no beacons.
 - **Deterministic evidence.** Pinned scanner versions ensure the same inputs always produce the same outputs.
-- **Air-gap ready.** No network calls during scan or report generation.
+- **Air-gap ready.** `ankercode scan` and `ankercode report` make no outbound network calls. The only external traffic is Trivy downloading its vulnerability database on first run (read-only, from aquasecurity servers) and Trivy resolving Maven POM files from Maven Central for Java projects — this is Trivy's own resolver, not AnkerCode. Pre-warm `~/.m2` with `mvn dependency:resolve` to avoid this entirely.
+- **Upload is opt-in.** `ankercode upload` only runs when explicitly called with an API key.
 
 ---
 
@@ -180,6 +277,7 @@ AnkerCode produces *technical inputs* to compliance processes. It does not certi
 ## Roadmap
 
 - [x] Phase 0 — CLI + scanner adapters + German PDF report
+- [x] Phase 0 — Docker image + CI integration (--fail-on, --quiet, --output-dir, GitHub Actions workflow)
 - [ ] Phase 1 — Code-level analysis (Semgrep: deprecated APIs, security anti-patterns, file + line + fix) + history dashboard (Next.js + Supabase) + VS Code extension
 - [ ] Phase 2 — Policy engine + on-prem Docker package + audit trail
 

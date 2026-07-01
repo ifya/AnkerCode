@@ -1,0 +1,113 @@
+name: AnkerCode Security Scan
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  scan:
+    name: Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Trivy DB cache (avoids DB re-download on every run) ─────────────────
+      # Trivy updates its vuln DB when it's older than ~12h. Caching on the host
+      # means most CI runs hit zero network calls for the DB.
+      # The cache key uses a daily timestamp so it refreshes automatically.
+      - name: Set daily date stamp
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy databases
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ steps.date.outputs.date }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
+      # ── Maven cache (prevents Trivy 429 from Maven Central) ──────────────────
+      - name: Cache Maven repository
+        if: hashFiles('**/pom.xml') != ''
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: maven-
+
+      - name: Warm Maven cache
+        if: hashFiles('**/pom.xml') != ''
+        run: mvn dependency:resolve -q --batch-mode || true
+
+      # ── Run AnkerCode ─────────────────────────────────────────────────────────
+      - name: Scan
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/scan \
+            -v ~/.m2:/root/.m2 \
+            -v ~/.cache/trivy:/root/.cache/trivy \
+            ghcr.io/ifya/ankercode:latest \
+            scan /scan \
+              --project "${{ github.event.repository.name }}" \
+              --output-dir /scan/.ankercode \
+              --fail-on high \
+              --quiet
+        # Exit codes:
+        #   0 = clean (no findings at/above threshold)
+        #   1 = runtime error
+        #   2 = policy gate triggered (findings found)
+        continue-on-error: true
+        id: scan
+
+      # ── Generate HTML report (always runs, even when scan finds issues) ───────
+      - name: Generate HTML report
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/scan \
+            ghcr.io/ifya/ankercode:latest \
+            report /scan \
+              --output-dir /scan/.ankercode \
+              --html
+        continue-on-error: true
+
+      # ── Upload report as artifact ─────────────────────────────────────────────
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ankercode-${{ github.sha }}
+          path: |
+            .ankercode/findings.json
+            .ankercode/sbom.cyclonedx.json
+            .ankercode/report-*.html
+          retention-days: 90
+
+      # ── Upload to dashboard (requires ANKERCODE_API_KEY secret) ──────────────
+      # Without the secret this step is skipped — not an error.
+      - name: Upload to AnkerCode dashboard
+        if: env.ANKERCODE_API_KEY != ''
+        env:
+          ANKERCODE_API_KEY: ${{ secrets.ANKERCODE_API_KEY }}
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/scan \
+            -e ANKERCODE_API_KEY \
+            ghcr.io/ifya/ankercode:latest \
+            upload /scan \
+              --org "${{ vars.ANKERCODE_ORG }}" \
+              --project "${{ github.event.repository.name }}" \
+              --repo-url "${{ github.server_url }}/${{ github.repository }}"
+
+      # ── Enforce policy gate ───────────────────────────────────────────────────
+      # Fail the workflow now if the scan found blocking issues.
+      # Doing this last ensures the report is always uploaded first.
+      - name: Check policy gate
+        if: steps.scan.outcome == 'failure'
+        run: |
+          echo "AnkerCode policy gate triggered — findings at or above threshold."
+          echo "Download the report artifact above for details."
+          exit 1

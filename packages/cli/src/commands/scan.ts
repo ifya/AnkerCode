@@ -13,8 +13,59 @@ import { scannerEnv } from "../adapters/env.js";
 
 const exec = promisify(execFile);
 
+// ── Exit codes ────────────────────────────────────────────────────────────────
+// 0 — clean / policy threshold not exceeded
+// 1 — runtime error (bad path, scanner crashed, unhandled exception)
+// 2 — scan succeeded but --fail-on threshold was exceeded (policy violation)
+//
+// Separating 1 and 2 lets CI distinguish "pipeline broken" from "code has findings"
+// so teams can treat them differently (alert vs. block).
+
+export const EXIT_ERROR   = 1;
+export const EXIT_POLICY  = 2;
+
+// ── Severity ranking (shared with policy check) ───────────────────────────────
+
+export const SEV_RANK: Record<string, number> = {
+  critical: 4,
+  high:     3,
+  medium:   2,
+  low:      1,
+  info:     0,
+};
+
+export type FailOnLevel = "critical" | "high" | "medium" | "low" | "any";
+
+// ── Options ───────────────────────────────────────────────────────────────────
+
+export interface ScanOptions {
+  project?:    string;
+  outputDir?:  string;  // default: <target>/ankercode/
+  quiet?:      boolean; // suppress human-readable output; print JSON summary to stdout
+  failOn?:     FailOnLevel; // exit 2 when any finding meets or exceeds this severity
+  sbom?:       boolean;
+  vulns?:      boolean;
+  licenses?:   boolean;
+  secrets?:    boolean;
+  code?:       boolean;
+}
+
+// ── Logger ────────────────────────────────────────────────────────────────────
+// Errors always go to stderr. Human log goes to stderr in quiet mode so stdout
+// stays clean for the JSON summary.
+
+function makeLogger(quiet: boolean) {
+  return {
+    log:  (...a: unknown[]) => { if (!quiet) console.log(...a); },
+    warn: (...a: unknown[]) => { console.error(...a); },         // always visible
+    err:  (...a: unknown[]) => { console.error(...a); },
+  };
+}
+
+// ── Git metadata ──────────────────────────────────────────────────────────────
+
 async function getGitMeta(targetPath: string): Promise<{ commitSha?: string; branch?: string }> {
-  const env = scannerEnv();
+  const env  = scannerEnv();
   const opts = { cwd: targetPath, env };
   const meta: { commitSha?: string; branch?: string } = {};
   await Promise.allSettled([
@@ -28,34 +79,28 @@ async function getGitMeta(targetPath: string): Promise<{ commitSha?: string; bra
   return meta;
 }
 
-export interface ScanOptions {
-  project?: string;
-  sbom?: boolean;
-  vulns?: boolean;
-  licenses?: boolean;
-  secrets?: boolean;
-  code?: boolean;
-}
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 export async function runScan(targetPath: string, opts: ScanOptions): Promise<void> {
   const target = resolve(targetPath);
   if (!existsSync(target)) {
     console.error(`Error: path does not exist: ${target}`);
-    process.exit(1);
+    process.exit(EXIT_ERROR);
   }
 
-  const outputDir = join(target, "ankercode");
+  const quiet     = Boolean(opts.quiet);
+  const log       = makeLogger(quiet);
+  const outputDir = opts.outputDir ? resolve(opts.outputDir) : join(target, "ankercode");
   mkdirSync(outputDir, { recursive: true });
 
   const projectName = opts.project ?? target.split("/").pop() ?? "unknown";
 
-  // if no flags given, run everything
-  const runAll = !opts.sbom && !opts.vulns && !opts.licenses && !opts.secrets && !opts.code;
-  const doSbom     = runAll || Boolean(opts.sbom);
-  const doVulns    = runAll || Boolean(opts.vulns);
-  const doLicenses = runAll || Boolean(opts.licenses);
-  const doSecrets  = runAll || Boolean(opts.secrets);
-  const doCode     = runAll || Boolean(opts.code);
+  const runAll      = !opts.sbom && !opts.vulns && !opts.licenses && !opts.secrets && !opts.code;
+  const doSbom      = runAll || Boolean(opts.sbom);
+  const doVulns     = runAll || Boolean(opts.vulns);
+  const doLicenses  = runAll || Boolean(opts.licenses);
+  const doSecrets   = runAll || Boolean(opts.secrets);
+  const doCode      = runAll || Boolean(opts.code);
 
   const activeScans = [
     doSbom     && "sbom",
@@ -65,69 +110,89 @@ export async function runScan(targetPath: string, opts: ScanOptions): Promise<vo
     doCode     && "code",
   ].filter(Boolean).join(", ");
 
-  console.log(`\nAnkerCode scan — ${projectName}`);
-  console.log(`Target  : ${target}`);
-  console.log(`Output  : ${outputDir}`);
-  console.log(`Scans   : ${activeScans}\n`);
+  log.log(`\nAnkerCode scan — ${projectName}`);
+  log.log(`Target    : ${target}`);
+  log.log(`Output    : ${outputDir}`);
+  log.log(`Scans     : ${activeScans}`);
+  if (opts.failOn) log.log(`Fail-on   : ${opts.failOn}`);
+  log.log();
 
-  console.log("Detecting scanner versions...");
+  log.log("Detecting scanner versions...");
   const scannerVersions = await getScannerVersions();
-  const versionLines = Object.entries(scannerVersions)
-    .map(([k, v]) => `  ${k.padEnd(12)} ${v}`)
-    .join("\n");
-  console.log(versionLines || "  (no scanners found in PATH)");
-  console.log();
+  log.log(
+    Object.entries(scannerVersions).map(([k, v]) => `  ${k.padEnd(12)} ${v}`).join("\n")
+    || "  (no scanners found in PATH)"
+  );
+  log.log();
 
   const gitMeta = await getGitMeta(target);
 
+  // ── Syft ──────────────────────────────────────────────────────────────────
   let sbomRef = undefined;
   if (doSbom) {
-    console.log("Running Syft (SBOM)...");
+    log.log("Running Syft (SBOM)...");
     try {
       sbomRef = await runSyft(target, outputDir);
-      console.log(`  SBOM written → ${sbomRef.path}`);
+      log.log(`  SBOM written → ${sbomRef.path}`);
     } catch (e) {
-      console.warn(`  Syft failed: ${(e as Error).message}`);
+      log.warn(`  Syft failed: ${(e as Error).message}`);
     }
   }
 
+  // ── Trivy ─────────────────────────────────────────────────────────────────
   let trivyFindings: Awaited<ReturnType<typeof runTrivy>> = [];
   if (doVulns || doLicenses) {
     const label = [doVulns && "vulnerabilities", doLicenses && "licenses"].filter(Boolean).join(" + ");
-    console.log(`Running Trivy (${label})...`);
+    log.log(`Running Trivy (${label})...`);
     try {
       trivyFindings = await runTrivy(target, { vulns: doVulns, licenses: doLicenses });
-      const vulns = trivyFindings.filter((f) => f.type === "vulnerability").length;
-      const lics  = trivyFindings.filter((f) => f.type === "license").length;
-      if (doVulns)    console.log(`  ${vulns} vulnerabilities`);
-      if (doLicenses) console.log(`  ${lics} license entries`);
+      if (doVulns)    log.log(`  ${trivyFindings.filter((f) => f.type === "vulnerability").length} vulnerabilities`);
+      if (doLicenses) log.log(`  ${trivyFindings.filter((f) => f.type === "license").length} license entries`);
     } catch (e) {
-      console.warn(`  Trivy failed: ${(e as Error).message}`);
+      log.warn(`  Trivy failed: ${(e as Error).message}`);
+      if ((e as Error).message.includes("429")) {
+        log.warn("  Tip: run `mvn dependency:resolve` first to warm ~/.m2 and avoid Maven Central rate limits.");
+      }
     }
   }
 
+  // ── Gitleaks ──────────────────────────────────────────────────────────────
   let secretFindings: Awaited<ReturnType<typeof runGitleaks>> = [];
   if (doSecrets) {
-    console.log("Running Gitleaks (secrets)...");
+    log.log("Running Gitleaks (secrets)...");
     try {
       secretFindings = await runGitleaks(target);
-      console.log(`  ${secretFindings.length} potential secrets found`);
+      log.log(`  ${secretFindings.length} potential secrets found`);
     } catch (e) {
-      console.warn(`  Gitleaks failed: ${(e as Error).message}`);
+      log.warn(`  Gitleaks failed: ${(e as Error).message}`);
     }
   }
 
   if (doCode) {
-    console.log("Running Semgrep (code analysis)... [coming in Phase 1]");
+    log.log("Running Semgrep (code analysis)... [coming in Phase 1]");
   }
 
-  const allFindings = [...trivyFindings, ...secretFindings];
+  // OSV adapter intentionally removed — air-gap first.
+  // api.osv.dev would send package names+versions externally.
+  // Trivy covers the same advisories when its scan completes without
+  // rate-limit interruption (warm Maven cache prevents the 429).
+  const osvFindings: never[] = [];
 
+  // ── Deduplicate ───────────────────────────────────────────────────────────
+  // Same (type, package, version, ruleId) → same finding ID. Keeps the first
+  // occurrence (Trivy wins over OSV for the same CVE since it's more detailed).
+  const seenIds = new Map<string, typeof trivyFindings[0]>();
+  for (const f of [...trivyFindings, ...osvFindings, ...secretFindings]) {
+    if (!seenIds.has(f.id)) seenIds.set(f.id, f);
+  }
+  const allFindings = [...seenIds.values()];
+
+  // ── Write artifacts ───────────────────────────────────────────────────────
   const scanRun: ScanRun = {
     id: randomUUID(),
     project: projectName,
     ...(gitMeta.commitSha !== undefined && { commitSha: gitMeta.commitSha }),
-    ...(gitMeta.branch !== undefined && { branch: gitMeta.branch }),
+    ...(gitMeta.branch    !== undefined && { branch:    gitMeta.branch }),
     scannerVersions,
     createdAt: new Date().toISOString(),
     ...(sbomRef !== undefined && { sbomRef }),
@@ -142,8 +207,8 @@ export async function runScan(targetPath: string, opts: ScanOptions): Promise<vo
       actor: "cli",
       action: "scan.run",
       metadata: {
-        project: projectName,
-        scanRunId: scanRun.id,
+        project:      projectName,
+        scanRunId:    scanRun.id,
         findingCount: allFindings.length,
         scannerVersions,
       },
@@ -151,14 +216,67 @@ export async function runScan(targetPath: string, opts: ScanOptions): Promise<vo
     outputDir,
   );
 
-  const critHigh = allFindings.filter(
-    (f) => f.type === "vulnerability" && (f.severity === "critical" || f.severity === "high"),
-  ).length;
+  // ── Summary ───────────────────────────────────────────────────────────────
+  const counts = {
+    critical: allFindings.filter((f) => f.severity === "critical").length,
+    high:     allFindings.filter((f) => f.severity === "high").length,
+    medium:   allFindings.filter((f) => f.severity === "medium").length,
+    low:      allFindings.filter((f) => f.severity === "low").length,
+    info:     allFindings.filter((f) => f.severity === "info").length,
+    total:    allFindings.length,
+  };
 
-  console.log(`\nDone.`);
-  console.log(`  Total findings    : ${allFindings.length}`);
-  console.log(`  Critical/High CVE : ${critHigh}`);
-  console.log(`  Findings written  → ${findingsPath}`);
-  if (sbomRef) console.log(`  SBOM written      → ${sbomRef.path}`);
-  console.log();
+  if (quiet) {
+    // Machine-readable summary to stdout — parseable by CI scripts / downstream tools
+    process.stdout.write(
+      JSON.stringify({
+        ok:          true,
+        project:     projectName,
+        scanRunId:   scanRun.id,
+        commitSha:   gitMeta.commitSha,
+        branch:      gitMeta.branch,
+        findings:    counts,
+        findingsPath,
+        sbomPath:    sbomRef?.path,
+        scannerVersions,
+      }) + "\n"
+    );
+  } else {
+    log.log(`\nDone.`);
+    log.log(`  Total findings    : ${counts.total}`);
+    log.log(`  Critical          : ${counts.critical}`);
+    log.log(`  High              : ${counts.high}`);
+    log.log(`  Medium            : ${counts.medium}`);
+    log.log(`  Low               : ${counts.low}`);
+    log.log(`  Findings written  → ${findingsPath}`);
+    if (sbomRef) log.log(`  SBOM written      → ${sbomRef.path}`);
+    log.log();
+  }
+
+  // ── Policy gate ───────────────────────────────────────────────────────────
+  if (opts.failOn) {
+    const threshold = opts.failOn === "any" ? 0 : (SEV_RANK[opts.failOn] ?? 0);
+    const violations = allFindings.filter(
+      (f) => (SEV_RANK[f.severity] ?? 0) >= threshold,
+    );
+    if (violations.length > 0) {
+      const msg = `Policy gate: ${violations.length} finding(s) at or above "${opts.failOn}" threshold.`;
+      if (quiet) {
+        // Overwrite the JSON line with failure flag so CI scripts can detect it
+        process.stdout.write(
+          JSON.stringify({
+            ok:         false,
+            project:    projectName,
+            scanRunId:  scanRun.id,
+            policyGate: { failOn: opts.failOn, violations: violations.length },
+            findings:   counts,
+            findingsPath,
+          }) + "\n"
+        );
+      } else {
+        console.error(`\n  ✗ ${msg}`);
+      }
+      process.exit(EXIT_POLICY);
+    }
+  }
 }

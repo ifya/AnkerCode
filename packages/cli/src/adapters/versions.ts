@@ -23,5 +23,8 @@ export async function getScannerVersions(): Promise<Record<string, string>> {
     }),
   ]);
 
+  // OSV API doesn't have a version, record the schema version
+  versions["osv-api"] = "v1";
+
   return versions;
 }

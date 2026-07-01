@@ -16,6 +16,8 @@ export async function runCheck(targetPath: string, opts: CheckOptions): Promise<
     docx: opts.docx || (!opts.pdf && !opts.html && !opts.docx),
   };
 
-  await runScan(targetPath, { project: opts.project });
-  await runReport(targetPath, { ...formats, output: undefined });
+  const scanOpts: Parameters<typeof runScan>[1] = {};
+  if (opts.project !== undefined) scanOpts.project = opts.project;
+  await runScan(targetPath, scanOpts);
+  await runReport(targetPath, { ...formats });
 }

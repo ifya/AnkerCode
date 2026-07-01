@@ -6,6 +6,21 @@ import { scannerEnv } from "./env.js";
 
 const exec = promisify(execFile);
 
+// Trivy DB mirrors, tried in order. ECR is first — it is unauthenticated and
+// consistently available in CI without GHCR/GCR rate-limit issues.
+// mirror.gcr.io and ghcr.io are Trivy's built-in defaults kept as fallbacks.
+const DB_REPOS = [
+  "public.ecr.aws/aquasecurity/trivy-db:2",
+  "mirror.gcr.io/aquasec/trivy-db:2",
+  "ghcr.io/aquasecurity/trivy-db:2",
+];
+
+const JAVA_DB_REPOS = [
+  "public.ecr.aws/aquasecurity/trivy-java-db:1",
+  "mirror.gcr.io/aquasec/trivy-java-db:1",
+  "ghcr.io/aquasecurity/trivy-java-db:1",
+];
+
 type TrivySeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "UNKNOWN";
 
 interface TrivyVuln {
@@ -69,6 +84,9 @@ export async function runTrivy(
 
   let stdout: string;
   try {
+    const dbFlags    = DB_REPOS.flatMap(r => ["--db-repository", r]);
+    const javaFlags  = JAVA_DB_REPOS.flatMap(r => ["--java-db-repository", r]);
+
     ({ stdout } = await exec(
       "trivy",
       [
@@ -77,6 +95,9 @@ export async function runTrivy(
         "--scanners", scanners,
         "--quiet",
         "--exit-code", "0",
+        "--no-progress",
+        ...dbFlags,
+        ...javaFlags,
       ],
       { env: scannerEnv(), maxBuffer: 100 * 1024 * 1024 },
     ));
