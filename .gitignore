@@ -34,3 +34,8 @@ Thumbs.db
 # Playwright
 /playwright-report/
 /test-results/
+
+# Fixture repos — clone manually, not committed
+# See fixtures/scan.sh for the full list
+fixtures/*/
+!fixtures/*.sh
