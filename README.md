@@ -56,8 +56,8 @@ Built for **German Mittelstand** software teams — Maschinenbau, IoT/Industrie 
 **Requirements:** Node.js ≥ 18, Git
 
 ```zsh
-git clone https://github.com/ifyagaming/ankercode.git
-cd ankercode
+git clone https://github.com/ifya/AnkerCode.git
+cd AnkerCode
 ./install.sh
 ```
 
@@ -165,10 +165,17 @@ AnkerCode's Docker image is lean (~450 MB) and downloads the Trivy vulnerability
 ```bash
 mkdir -p ~/.cache/trivy
 
+# Vulnerability database (~55 MB)
 docker run --rm \
   -v ~/.cache/trivy:/root/.cache/trivy \
   ghcr.io/ifya/ankercode:latest \
-  trivy fs --download-db-only --download-java-db-only /tmp
+  trivy fs --download-db-only /tmp
+
+# Java artifact index (~150 MB) — needed for Java/Maven projects
+docker run --rm \
+  -v ~/.cache/trivy:/root/.cache/trivy \
+  ghcr.io/ifya/ankercode:latest \
+  trivy fs --download-java-db-only /tmp
 ```
 
 **Step 2 — transfer the cache to the air-gapped machine**
