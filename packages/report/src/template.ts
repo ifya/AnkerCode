@@ -1,13 +1,13 @@
-import type { ScanRun, Finding } from "@ankercode/core";
+import type { ScanRun, Finding, PolicyResult, PolicyViolation } from "@ankercode/core";
 import type { Decisions } from "./decisions.js";
 
 function severityLabel(s: Finding["severity"]): string {
   const map: Record<Finding["severity"], string> = {
     critical: "KRITISCH",
-    high: "HOCH",
-    medium: "MITTEL",
-    low: "NIEDRIG",
-    info: "INFO",
+    high:     "HOCH",
+    medium:   "MITTEL",
+    low:      "NIEDRIG",
+    info:     "INFO",
   };
   return map[s];
 }
@@ -25,9 +25,7 @@ function severityDot(s: Finding["severity"]): string {
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("de-DE", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
+    day: "2-digit", month: "2-digit", year: "numeric",
   });
 }
 
@@ -37,26 +35,26 @@ function escapeMarkdown(s: string): string {
 
 function sortedFindings(findings: Finding[]): Finding[] {
   const order: Record<Finding["severity"], number> = {
-    critical: 0,
-    high: 1,
-    medium: 2,
-    low: 3,
-    info: 4,
+    critical: 0, high: 1, medium: 2, low: 3, info: 4,
   };
   return [...findings].sort((a, b) => order[a.severity] - order[b.severity]);
 }
 
-export function renderReportMarkdown(scanRun: ScanRun, decisions: Decisions): string {
-  const vulnFindings = sortedFindings(
-    scanRun.findings.filter((f) => f.type === "vulnerability"),
-  );
+function policyActionLabel(action: PolicyViolation["action"]): string {
+  return action === "block" ? "BLOCKIERT" : "WARNUNG";
+}
+
+export function renderReportMarkdown(
+  scanRun:      ScanRun,
+  decisions:    Decisions,
+  policyResult?: PolicyResult,
+): string {
+  const vulnFindings    = sortedFindings(scanRun.findings.filter((f) => f.type === "vulnerability"));
   const licenseFindings = scanRun.findings.filter((f) => f.type === "license");
-  const secretFindings = scanRun.findings.filter((f) => f.type === "secret");
+  const secretFindings  = scanRun.findings.filter((f) => f.type === "secret");
 
   const acceptedIds = new Set((decisions.riskAcceptances ?? []).map((r) => r.findingId));
-  const vexMap = new Map(
-    (decisions.vex ?? []).map((v) => [v.findingId, v]),
-  );
+  const vexMap      = new Map((decisions.vex ?? []).map((v) => [v.findingId, v]));
 
   const openVulns = vulnFindings.filter(
     (f) => !acceptedIds.has(f.id) && vexMap.get(f.id)?.status !== "not_affected",
@@ -69,43 +67,93 @@ export function renderReportMarkdown(scanRun: ScanRun, decisions: Decisions): st
     .map(([k, v]) => `| ${escapeMarkdown(k)} | ${escapeMarkdown(v)} |`)
     .join("\n");
 
+  // Section counter — increments when Policy-Bewertung is present
+  let sec = 0;
+  const S = () => `${++sec}.`;
+
   const lines: string[] = [];
 
-  // ── Header ──────────────────────────────────────────────────────────────
+  // ── Header ─────────────────────────────────────────────────────────────────
   lines.push(`% CRA Readiness Evidence Report`);
   lines.push(`% ${escapeMarkdown(scanRun.project)}`);
   lines.push(`% ${formatDate(scanRun.createdAt)}`);
   lines.push("");
 
-  // ── 1. Zusammenfassung ───────────────────────────────────────────────────
-  lines.push("# 1. Zusammenfassung");
+  // ── 1. Zusammenfassung ─────────────────────────────────────────────────────
+  lines.push(`# ${S()} Zusammenfassung`);
   lines.push("");
   lines.push(
     `Dieser Bericht dokumentiert den Sicherheits- und Lizenz-Status des Projekts ` +
-      `**${escapeMarkdown(scanRun.project)}** auf Basis automatisierter lokaler Scans. ` +
-      `Er dient als Nachweis im Rahmen der technischen Unterstützung für Compliance-Prozesse ` +
-      `gemäß CRA Readiness und BSI TR-03183.`,
+    `**${escapeMarkdown(scanRun.project)}** auf Basis automatisierter lokaler Scans. ` +
+    `Er dient als Nachweis im Rahmen der technischen Unterstützung für Compliance-Prozesse ` +
+    `gemäß CRA Readiness und BSI TR-03183.`,
   );
   lines.push("");
   lines.push("| Kennzahl | Wert |");
   lines.push("|---|---|");
   lines.push(`| Scan-Datum | ${formatDate(scanRun.createdAt)} |`);
-  if (scanRun.branch) lines.push(`| Branch | \`${escapeMarkdown(scanRun.branch)}\` |`);
+  if (scanRun.branch)    lines.push(`| Branch | \`${escapeMarkdown(scanRun.branch)}\` |`);
   if (scanRun.commitSha) lines.push(`| Commit | \`${escapeMarkdown(scanRun.commitSha.slice(0, 12))}\` |`);
   lines.push(`| Gefundene Schwachstellen (gesamt) | ${vulnFindings.length} |`);
   lines.push(`| Davon Kritisch/Hoch (offen) | ${critHigh.length} |`);
   lines.push(`| Secrets-Treffer | ${secretFindings.length} |`);
   lines.push(`| Lizenzen erfasst | ${licenseFindings.length} |`);
   lines.push(`| Akzeptierte Risiken | ${decisions.riskAcceptances?.length ?? 0} |`);
+  if (policyResult) {
+    const policyStatus = policyResult.passed
+      ? "✓ BESTANDEN"
+      : `✗ NICHT BESTANDEN (${policyResult.violations.length} Verstoß/Verstöße)`;
+    lines.push(`| Policy-Status | ${policyStatus} |`);
+    if (policyResult.warnings.length > 0) {
+      lines.push(`| Policy-Warnungen | ${policyResult.warnings.length} |`);
+    }
+  }
   lines.push("");
 
-  // ── 2. SBOM-Zusammenfassung ──────────────────────────────────────────────
-  lines.push("# 2. SBOM-Zusammenfassung");
+  // ── 2. Policy-Bewertung (optional) ────────────────────────────────────────
+  if (policyResult) {
+    lines.push(`# ${S()} Policy-Bewertung`);
+    lines.push("");
+
+    const statusIcon = policyResult.passed ? "✓" : "✗";
+    const statusText = policyResult.passed ? "BESTANDEN" : "NICHT BESTANDEN";
+    const summary = [
+      `${policyResult.violations.length} Verstoß/Verstöße`,
+      `${policyResult.warnings.length} Warnung(en)`,
+    ].join(", ");
+
+    lines.push(`**${statusIcon} ${statusText}** — ${summary}`);
+    lines.push("");
+
+    const allEntries = [...policyResult.violations, ...policyResult.warnings];
+    if (allEntries.length === 0) {
+      lines.push("*Alle Regeln eingehalten. Keine Verstöße oder Warnungen.*");
+    } else {
+      lines.push("| Regel-ID | Befund | Aktion |");
+      lines.push("|---|---|---|");
+      for (const entry of allEntries) {
+        lines.push(
+          `| \`${escapeMarkdown(entry.ruleId)}\` ` +
+          `| ${escapeMarkdown(entry.message)} ` +
+          `| **${policyActionLabel(entry.action)}** |`,
+        );
+      }
+    }
+    lines.push("");
+    lines.push(
+      `> Grundlage: \`${escapeMarkdown(policyResult.policyFile)}\` ` +
+      `— Ausgewertet: ${formatDate(policyResult.evaluatedAt)}`,
+    );
+    lines.push("");
+  }
+
+  // ── SBOM-Zusammenfassung ───────────────────────────────────────────────────
+  lines.push(`# ${S()} SBOM-Zusammenfassung`);
   lines.push("");
   if (scanRun.sbomRef) {
     lines.push(
       `Eine Software Bill of Materials (SBOM) im Format **${scanRun.sbomRef.format}** ` +
-        `wurde erstellt und lokal gespeichert.`,
+      `wurde erstellt und lokal gespeichert.`,
     );
     lines.push("");
     lines.push("| Attribut | Wert |");
@@ -118,8 +166,8 @@ export function renderReportMarkdown(scanRun: ScanRun, decisions: Decisions): st
   }
   lines.push("");
 
-  // ── 3. Alle Schwachstellen ───────────────────────────────────────────────
-  lines.push("# 3. Schwachstellen");
+  // ── Schwachstellen ─────────────────────────────────────────────────────────
+  lines.push(`# ${S()} Schwachstellen`);
   lines.push("");
   if (openVulns.length === 0) {
     lines.push("*Keine offenen Schwachstellen gefunden.*");
@@ -131,11 +179,9 @@ export function renderReportMarkdown(scanRun: ScanRun, decisions: Decisions): st
       ["low",      "Niedrig"],
       ["info",     "Info"],
     ];
-
     for (const [sev, label] of bySeverity) {
       const group = openVulns.filter((f) => f.severity === sev);
       if (group.length === 0) continue;
-
       lines.push(`## ${severityDot(sev)} ${label} (${group.length})`);
       lines.push("");
       lines.push("| CVE / ID | Paket | Version | Fix | Manifest |");
@@ -153,49 +199,37 @@ export function renderReportMarkdown(scanRun: ScanRun, decisions: Decisions): st
     }
   }
 
-  // ── 4. Lizenz-Risiko ────────────────────────────────────────────────────
-  lines.push("# 4. Lizenz-Risiko");
+  // ── Lizenz-Risiko ──────────────────────────────────────────────────────────
+  lines.push(`# ${S()} Lizenz-Risiko`);
   lines.push("");
   if (licenseFindings.length === 0) {
     lines.push("*Keine Lizenzen erfasst.*");
   } else {
     const byLicense = new Map<string, string[]>();
     for (const f of licenseFindings) {
-      const lic = f.license ?? "unbekannt";
+      const lic      = f.license ?? "unbekannt";
       const existing = byLicense.get(lic) ?? [];
-      if (f.package?.name && !existing.includes(f.package.name)) {
-        existing.push(f.package.name);
-      }
+      if (f.package?.name && !existing.includes(f.package.name)) existing.push(f.package.name);
       byLicense.set(lic, existing);
     }
-
     const sorted = [...byLicense.entries()].sort((a, b) => b[1].length - a[1].length);
-
-    // Summary table
     lines.push("| Lizenz | Anzahl Pakete |");
     lines.push("|---|---|");
-    for (const [lic, pkgs] of sorted) {
-      lines.push(`| ${escapeMarkdown(lic)} | ${pkgs.length} |`);
-    }
+    for (const [lic, pkgs] of sorted) lines.push(`| ${escapeMarkdown(lic)} | ${pkgs.length} |`);
     lines.push("");
-
-    // Per-license package list
     for (const [lic, pkgs] of sorted) {
       lines.push(`**${escapeMarkdown(lic)}**`);
       lines.push("");
-      // Wrap into rows of 6 to keep lines readable
       const chunks: string[][] = [];
       for (let i = 0; i < pkgs.length; i += 6) chunks.push(pkgs.slice(i, i + 6));
-      for (const chunk of chunks) {
-        lines.push(chunk.map((p) => `\`${escapeMarkdown(p)}\``).join(" · "));
-      }
+      for (const chunk of chunks) lines.push(chunk.map((p) => `\`${escapeMarkdown(p)}\``).join(" · "));
       lines.push("");
     }
   }
   lines.push("");
 
-  // ── 5. Vulnerability-Handling-Nachweis ──────────────────────────────────
-  lines.push("# 5. Vulnerability-Handling-Nachweis");
+  // ── Vulnerability-Handling-Nachweis ───────────────────────────────────────
+  lines.push(`# ${S()} Vulnerability-Handling-Nachweis`);
   lines.push("");
   if (vexMap.size === 0) {
     lines.push(
@@ -207,14 +241,14 @@ export function renderReportMarkdown(scanRun: ScanRun, decisions: Decisions): st
     for (const [id, vex] of vexMap) {
       lines.push(
         `| \`${escapeMarkdown(id.slice(0, 12))}\` | ${escapeMarkdown(vex.status)} | ` +
-          `${escapeMarkdown(vex.justification ?? vex.statement ?? "—")} | ${escapeMarkdown(vex.author)} |`,
+        `${escapeMarkdown(vex.justification ?? vex.statement ?? "—")} | ${escapeMarkdown(vex.author)} |`,
       );
     }
   }
   lines.push("");
 
-  // ── 6. Akzeptierte Risiken ───────────────────────────────────────────────
-  lines.push("# 6. Akzeptierte Risiken");
+  // ── Akzeptierte Risiken ────────────────────────────────────────────────────
+  lines.push(`# ${S()} Akzeptierte Risiken`);
   lines.push("");
   if (!decisions.riskAcceptances?.length) {
     lines.push("*Keine akzeptierten Risiken.*");
@@ -224,27 +258,31 @@ export function renderReportMarkdown(scanRun: ScanRun, decisions: Decisions): st
     for (const r of decisions.riskAcceptances) {
       lines.push(
         `| \`${escapeMarkdown(r.findingId.slice(0, 12))}\` | ${escapeMarkdown(r.reason)} | ` +
-          `${escapeMarkdown(r.acceptedBy)} | ${r.expiresAt ? formatDate(r.expiresAt) : "unbegrenzt"} |`,
+        `${escapeMarkdown(r.acceptedBy)} | ${r.expiresAt ? formatDate(r.expiresAt) : "unbegrenzt"} |`,
       );
     }
   }
   lines.push("");
 
-  // ── 7. Methodik und Scanner-Versionen ───────────────────────────────────
-  lines.push("# 7. Methodik und Scanner-Versionen");
+  // ── Methodik und Scanner-Versionen ─────────────────────────────────────────
+  lines.push(`# ${S()} Methodik und Scanner-Versionen`);
   lines.push("");
   lines.push(
     "Die Analyse wurde ausschließlich lokal durchgeführt. Quellcode hat das System nicht verlassen. " +
-      "Folgende Open-Source-Scanner wurden eingesetzt:",
+    "Folgende Open-Source-Scanner wurden eingesetzt:",
   );
   lines.push("");
   lines.push("| Scanner | Version |");
   lines.push("|---|---|");
   lines.push(scannerVersionLines);
   lines.push("");
+  if (policyResult) {
+    lines.push(`Policy-Datei: \`${escapeMarkdown(policyResult.policyFile)}\``);
+    lines.push("");
+  }
   lines.push(
     "> **Hinweis:** Dieser Bericht ist maschinell erzeugt und stellt keine Konformitätserklärung dar. " +
-      "Ein Mensch ist für die Bewertung und Unterzeichnung verantwortlich.",
+    "Ein Mensch ist für die Bewertung und Unterzeichnung verantwortlich.",
   );
   lines.push("");
 
