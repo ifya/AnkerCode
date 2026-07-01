@@ -22,13 +22,16 @@ function matchVuln(finding: Finding, policy: PolicyConfig): RuleMatch | null {
     if (!rule.severity.includes(finding.severity)) continue;
     if (rule.scope && !rule.scope.includes(finding.scope)) continue;
 
-    const pkg = finding.package?.name ?? finding.id.slice(0, 8);
-    const cve = finding.cveId ?? finding.id.slice(0, 12);
+    const pkg   = finding.package?.name    ?? finding.id.slice(0, 8);
+    const ver   = finding.package?.version ?? "";
+    const cve   = finding.cveId            ?? finding.id.slice(0, 12);
+    const fix   = finding.recommendedAction ? ` → ${finding.recommendedAction}` : " → kein Fix verfügbar";
+    const scope = finding.scope !== "unknown" ? ` [${finding.scope}]` : "";
 
     return {
       ruleId:  rule.id,
       action:  rule.action,
-      message: `${cve} · ${pkg} (${finding.severity}, scope: ${finding.scope})`,
+      message: `${cve} in ${pkg}${ver ? `@${ver}` : ""}${fix}${scope}`,
     };
   }
   return null;
@@ -66,10 +69,17 @@ function matchLicense(finding: Finding, policy: PolicyConfig): RuleMatch | null 
 function matchSecret(finding: Finding, policy: PolicyConfig): RuleMatch | null {
   const action = policy.secrets?.action ?? "block";
   if (action === "ignore") return null;
+  const type = finding.source.ruleId ?? "secret";
+  const loc  = finding.source.manifest
+    ? (() => {
+        const parts = finding.source.manifest.replace(/\\/g, "/").split("/");
+        return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : finding.source.manifest;
+      })()
+    : finding.id.slice(0, 12);
   return {
     ruleId:  "secret-detected",
     action,
-    message: `Secret: ${finding.source.ruleId ?? finding.id.slice(0, 8)}`,
+    message: `${type} in ${loc}`,
   };
 }
 

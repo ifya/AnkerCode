@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "fs";
 import { resolve, join } from "path";
 import { readConfig } from "../config.js";
-import type { ScanRun } from "@ankercode/core";
+import type { ScanRun, PolicyResult } from "@ankercode/core";
+import { PolicyResultSchema } from "@ankercode/core";
 
 export interface UploadOptions {
   org:     string;
@@ -41,11 +42,25 @@ export async function runUpload(targetPath: string, opts: UploadOptions): Promis
     process.exit(1);
   }
 
+  // Include policy result if present alongside findings.json
+  let policyResult: PolicyResult | undefined;
+  const policyResultFile = join(outputDir, "policy-result.json");
+  if (existsSync(policyResultFile)) {
+    const parsed = PolicyResultSchema.safeParse(
+      JSON.parse(readFileSync(policyResultFile, "utf8")),
+    );
+    if (parsed.success) policyResult = parsed.data;
+  }
+
   console.log(`\x1b[36m▲\x1b[0m AnkerCode Upload`);
   console.log(`  Ziel:    \x1b[2m${cloudUrl}\x1b[0m`);
   console.log(`  Org:     \x1b[33m${opts.org}\x1b[0m`);
   console.log(`  Projekt: \x1b[33m${opts.project}\x1b[0m`);
   console.log(`  Befunde: ${scanRun.findings.length}`);
+  if (policyResult !== undefined) {
+    const pStatus = policyResult.passed ? "\x1b[32m✓ bestanden\x1b[0m" : "\x1b[31m✗ verletzt\x1b[0m";
+    console.log(`  Policy:  ${pStatus}`);
+  }
   console.log();
 
   // ── POST to cloud API ─────────────────────────────────────────
@@ -66,6 +81,7 @@ export async function runUpload(targetPath: string, opts: UploadOptions): Promis
         repoUrl:     opts.repoUrl,
         projectName: opts.project,
         scanRun,
+        ...(policyResult !== undefined ? { policyResult } : {}),
       }),
     });
   } catch (err: unknown) {

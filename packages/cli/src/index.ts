@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Command } from "commander";
 import { runScan } from "./commands/scan.js";
 import { runReport } from "./commands/report.js";
