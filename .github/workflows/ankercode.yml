@@ -15,6 +15,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── Trivy DB cache (avoids DB re-download on every run) ─────────────────
+      # Trivy updates its vuln DB when it's older than ~12h. Caching on the host
+      # means most CI runs hit zero network calls for the DB.
+      # The cache key uses a daily timestamp so it refreshes automatically.
+      - name: Set daily date stamp
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Trivy databases
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ runner.os }}-${{ steps.date.outputs.date }}
+          restore-keys: trivy-db-${{ runner.os }}-
+
       # ── Maven cache (prevents Trivy 429 from Maven Central) ──────────────────
       - name: Cache Maven repository
         if: hashFiles('**/pom.xml') != ''
@@ -34,6 +49,7 @@ jobs:
           docker run --rm \
             -v ${{ github.workspace }}:/scan \
             -v ~/.m2:/root/.m2 \
+            -v ~/.cache/trivy:/root/.cache/trivy \
             ghcr.io/ifya/ankercode:latest \
             scan /scan \
               --project "${{ github.event.repository.name }}" \
