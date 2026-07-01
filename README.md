@@ -156,6 +156,43 @@ A full workflow with Maven cache, HTML report generation, and optional dashboard
 
 ---
 
+## Air-Gap / Offline Use
+
+AnkerCode's Docker image is lean (~450 MB) and downloads the Trivy vulnerability database on first use. For air-gapped or firewall-restricted environments, pre-seed the database once in a connected environment and carry it across.
+
+**Step 1 — seed the Trivy database (connected machine)**
+
+```bash
+mkdir -p ~/.cache/trivy
+
+docker run --rm \
+  -v ~/.cache/trivy:/root/.cache/trivy \
+  ghcr.io/ifya/ankercode:latest \
+  trivy fs --download-db-only --download-java-db-only /tmp
+```
+
+**Step 2 — transfer the cache to the air-gapped machine**
+
+Copy `~/.cache/trivy/` to the target machine (USB, internal artifact store, etc.).
+
+**Step 3 — run offline**
+
+```bash
+docker run --rm \
+  -v /path/to/repo:/scan \
+  -v ~/.cache/trivy:/root/.cache/trivy \
+  -e TRIVY_SKIP_DB_UPDATE=true \
+  -e TRIVY_SKIP_JAVA_DB_UPDATE=true \
+  ghcr.io/ifya/ankercode:latest \
+  scan /scan --project myproduct
+```
+
+The two environment variables tell Trivy to use the mounted cache as-is and make zero outbound calls. The Trivy DB is roughly 200 MB total; refresh it whenever your security team wants a newer advisory snapshot.
+
+> **Java/Maven projects in air-gap:** Trivy also downloads parent POM files from Maven Central to resolve the transitive dependency tree. Pre-warm `~/.m2` on a connected machine with `mvn dependency:resolve`, then mount it: `-v ~/.m2:/root/.m2`.
+
+---
+
 ## Under the Hood
 
 AnkerCode wraps — never reimplements — the best open-source scanners:
