@@ -51,9 +51,12 @@ export async function runGitleaks(targetPath: string): Promise<Finding[]> {
   const leaks: GitleaksLeak[] = JSON.parse(raw);
 
   return leaks.map((leak) => {
+    // Include line number so two secrets with the same ruleId in the same file
+    // don't hash to the same ID. Fingerprint would be more stable but contains
+    // the commit SHA and rotates on history rewrites; file:line is good enough.
     const id = makeFindingId({
       type: "secret",
-      packageName: leak.File,
+      packageName: `${leak.File}:${leak.StartLine}`,
       packageVersion: "",
       ruleId: leak.RuleID,
     });
