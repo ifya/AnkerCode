@@ -9,7 +9,6 @@ import { getScannerVersions } from "../adapters/versions.js";
 import { runSyft } from "../adapters/syft.js";
 import { runTrivy } from "../adapters/trivy.js";
 import { runGitleaks } from "../adapters/gitleaks.js";
-import { runOsv } from "../adapters/osv.js";
 import { scannerEnv } from "../adapters/env.js";
 
 const exec = promisify(execFile);
@@ -173,21 +172,11 @@ export async function runScan(targetPath: string, opts: ScanOptions): Promise<vo
     log.log("Running Semgrep (code analysis)... [coming in Phase 1]");
   }
 
-  // ── OSV ───────────────────────────────────────────────────────────────────
-  let osvFindings: Awaited<ReturnType<typeof runOsv>> = [];
-  if (doVulns && sbomRef) {
-    log.log("Running OSV API (GHSA coverage gap)...");
-    try {
-      osvFindings = await runOsv(sbomRef.path, trivyFindings);
-      const net = osvFindings.length;
-      log.log(net > 0
-        ? `  +${net} additional advisories (GHSA-only, not in Trivy)`
-        : "  No additional advisories found"
-      );
-    } catch (e) {
-      log.warn(`  OSV API unavailable, skipping: ${(e as Error).message}`);
-    }
-  }
+  // OSV adapter intentionally removed — air-gap first.
+  // api.osv.dev would send package names+versions externally.
+  // Trivy covers the same advisories when its scan completes without
+  // rate-limit interruption (warm Maven cache prevents the 429).
+  const osvFindings: never[] = [];
 
   // ── Deduplicate ───────────────────────────────────────────────────────────
   // Same (type, package, version, ruleId) → same finding ID. Keeps the first

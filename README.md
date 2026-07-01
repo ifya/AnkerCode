@@ -213,7 +213,8 @@ ankercode/
 - **Source code never leaves your machine.** Only normalized findings metadata, SBOMs, and hashes are involved — and only locally.
 - **No telemetry.** No analytics, no phone-home, no beacons.
 - **Deterministic evidence.** Pinned scanner versions ensure the same inputs always produce the same outputs.
-- **Air-gap ready.** No network calls during scan or report generation.
+- **Air-gap ready.** `ankercode scan` and `ankercode report` make no outbound network calls. The only external traffic is Trivy downloading its vulnerability database on first run (read-only, from aquasecurity servers) and Trivy resolving Maven POM files from Maven Central for Java projects — this is Trivy's own resolver, not AnkerCode. Pre-warm `~/.m2` with `mvn dependency:resolve` to avoid this entirely.
+- **Upload is opt-in.** `ankercode upload` only runs when explicitly called with an API key.
 
 ---
 
