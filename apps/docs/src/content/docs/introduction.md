@@ -5,7 +5,7 @@ description: What AnkerCode is, what it does, and what it deliberately doesn't d
 
 AnkerCode is a **local-first CRA/BSI compliance evidence layer** for German software teams. It runs existing open-source scanners on your machine, normalizes the results into an open-format evidence model, and produces audit-ready German-language compliance reports.
 
-**Source code never leaves your machine by default.** Only normalized findings, SBOMs, hashes, and package metadata may leave — and only when you explicitly opt in.
+**Source code never leaves your machine by default.** Only normalized findings, SBOMs, hashes, and package metadata may leave — and only when you explicitly opt in. Trivy runs with `--offline-scan`, which prevents it from sending package names or coordinates to Maven Central, PyPI, npm, or any external registry during a scan.
 
 ---
 

@@ -88,6 +88,19 @@ Modular flags map naturally to separate CI jobs:
 
 GitLab and GitHub CI templates are planned for Phase 1.
 
+## Network behavior
+
+`ankercode scan` is local-first. Here is exactly what goes in and out:
+
+| Traffic | Direction | What is sent |
+|---|---|---|
+| Trivy CVE database update | Outbound (first run / stale cache) | Nothing about your code — Trivy downloads new vulnerability signatures from `ghcr.io/aquasecurity/trivy-db`. Cached locally, refreshed automatically when stale. |
+| Package metadata lookup | **Blocked** | AnkerCode runs Trivy with `--offline-scan`. Package names, versions, and coordinates never reach Maven Central, PyPI, npm, NuGet, or any external registry. |
+| Source code | **Never** | Source files stay on your machine in all modes. |
+| Dashboard upload | Opt-in only | Only when you explicitly run `ankercode upload`. |
+
+The Trivy DB date is recorded in `scannerVersions` as `trivy-db: YYYY-MM-DD` so every evidence report shows exactly which vulnerability snapshot was active at scan time.
+
 ## Finding ID stability
 
 Every finding gets a stable 16-character SHA-256 ID derived from `(type, packageName, packageVersion, ruleId)`. The same finding always gets the same ID across runs — this makes VEX statements in `ankercode.decisions.yaml` durable.

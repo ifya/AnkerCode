@@ -17,7 +17,7 @@ type ScanRun = {
   project: string;
   commitSha?: string;
   branch?: string;
-  scannerVersions: Record<string, string>;  // { syft: "1.46.0", trivy: "0.72.0", ... }
+  scannerVersions: Record<string, string>;  // { syft: "1.46.0", trivy: "0.72.0", "trivy-db": "2026-07-02", gitleaks: "8.30.1" }
   createdAt: string;                         // ISO 8601
   sbomRef?: SbomRef;
   findings: Finding[];
