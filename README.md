@@ -6,7 +6,7 @@
   <p><strong>Ruhe vor dem Audit.</strong></p>
 
   <p>
-    Local-first CRA &amp; BSI compliance evidence for German software teams.<br/>
+    CRA &amp; BSI compliance evidence for German software teams.<br/>
     Scan. Enforce policy. Report. Zero data leaves your machine.
   </p>
 
