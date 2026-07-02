@@ -96,6 +96,7 @@ export async function runTrivy(
         "--quiet",
         "--exit-code", "0",
         "--no-progress",
+        "--offline-scan",   // never contact Maven Central / PyPI / npm for metadata
         ...dbFlags,
         ...javaFlags,
       ],

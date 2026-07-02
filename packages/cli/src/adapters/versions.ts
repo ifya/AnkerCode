@@ -13,9 +13,14 @@ export async function getScannerVersions(): Promise<Record<string, string>> {
       const m = stdout.match(/syft\s+([\d.]+)/);
       if (m?.[1]) versions["syft"] = m[1];
     }),
-    exec("trivy", ["--version"], { env }).then(({ stdout }) => {
-      const m = stdout.match(/Version:\s+([\d.]+)/);
-      if (m?.[1]) versions["trivy"] = m[1];
+    exec("trivy", ["version", "--format", "json"], { env }).then(({ stdout }) => {
+      const parsed = JSON.parse(stdout) as {
+        Version?: string;
+        VulnerabilityDB?: { UpdatedAt?: string };
+      };
+      if (parsed.Version) versions["trivy"] = parsed.Version;
+      const dbDate = parsed.VulnerabilityDB?.UpdatedAt;
+      if (dbDate) versions["trivy-db"] = dbDate.slice(0, 10); // YYYY-MM-DD
     }),
     exec("gitleaks", ["version"], { env }).then(({ stdout }) => {
       const v = stdout.trim();
