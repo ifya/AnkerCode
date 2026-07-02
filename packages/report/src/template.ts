@@ -124,10 +124,6 @@ export function renderReportMarkdown(
   );
   const critHigh = openVulns.filter((f) => f.severity === "critical" || f.severity === "high");
 
-  const scannerVersionLines = Object.entries(scanRun.scannerVersions)
-    .map(([k, v]) => `| ${escapeMarkdown(k)} | ${escapeMarkdown(v)} |`)
-    .join("\n");
-
   let sec = 0;
   const S = () => `${++sec}.`;
 
@@ -395,9 +391,19 @@ export function renderReportMarkdown(
     "Folgende Open-Source-Scanner wurden eingesetzt:",
   );
   lines.push("");
-  lines.push("| Scanner | Version |");
-  lines.push("|---|---|");
-  lines.push(scannerVersionLines);
+  lines.push("| Scanner | Version | Funktion |");
+  lines.push("|---|---|---|");
+  const SCANNER_ROLE: Record<string, string> = {
+    syft:       "SBOM-Erzeugung (CycloneDX)",
+    trivy:      "Schwachstellen & Lizenzen",
+    "trivy-db": "CVE-Datenbank (Stand des Scans)",
+    gitleaks:   "Secret Detection",
+    "osv-api":  "OSV-Datenbank Abgleich",
+  };
+  const scannerLines = Object.entries(scanRun.scannerVersions)
+    .map(([k, v]) => `| ${escapeMarkdown(k)} | ${escapeMarkdown(v)} | ${escapeMarkdown(SCANNER_ROLE[k] ?? "Analyse")} |`)
+    .join("\n");
+  lines.push(scannerLines);
   lines.push("");
   if (policyResult) {
     lines.push(`Policy-Datei: \`${escapeMarkdown(policyResult.policyFile)}\``);
