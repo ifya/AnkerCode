@@ -167,8 +167,7 @@ A full workflow with Maven cache, HTML report generation, and optional dashboard
 
 **Docker image:** `ghcr.io/ifya/ankercode:latest` — `linux/amd64` + `linux/arm64`, ~450 MB.
 
-> **Maven projects:** mount your `~/.m2` cache to avoid Trivy hitting Maven Central rate limits:
-> `docker run -v ~/.m2:/root/.m2 ...`
+> **Maven projects:** AnkerCode runs Trivy with `--offline-scan`, which prevents it from contacting Maven Central, PyPI, or npm for package metadata. Your dependency coordinates never leave the machine.
 
 ---
 
@@ -211,8 +210,6 @@ docker run --rm \
 ```
 
 The two environment variables tell Trivy to use the mounted cache as-is and make zero outbound calls. The Trivy DB is roughly 200 MB total; refresh it whenever your security team wants a newer advisory snapshot.
-
-> **Java/Maven projects in air-gap:** Trivy also downloads parent POM files from Maven Central to resolve the transitive dependency tree. Pre-warm `~/.m2` on a connected machine with `mvn dependency:resolve`, then mount it: `-v ~/.m2:/root/.m2`.
 
 ---
 
@@ -340,7 +337,7 @@ ankercode/
 - **Source code never leaves your machine.** Only normalized findings metadata, SBOMs, and hashes are involved — and only locally.
 - **No telemetry.** No analytics, no phone-home, no beacons.
 - **Deterministic evidence.** Pinned scanner versions ensure the same inputs always produce the same outputs.
-- **Air-gap ready.** `ankercode scan` and `ankercode report` make no outbound network calls. The only external traffic is Trivy downloading its vulnerability database on first run (read-only, from aquasecurity servers) and Trivy resolving Maven POM files from Maven Central for Java projects — this is Trivy's own resolver, not AnkerCode. Pre-warm `~/.m2` with `mvn dependency:resolve` to avoid this entirely.
+- **Air-gap ready.** `ankercode scan` and `ankercode report` make no outbound network calls beyond Trivy downloading its vulnerability database on first run (read-only, from aquasecurity servers). AnkerCode runs Trivy with `--offline-scan` — package names, coordinates, and dependency metadata never reach Maven Central, PyPI, npm, or any external registry.
 - **Upload is opt-in.** `ankercode upload` only runs when explicitly called with an API key.
 
 ---
