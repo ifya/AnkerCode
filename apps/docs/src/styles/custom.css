@@ -1,12 +1,19 @@
+/* ── Dark mode (Starlight default) ───────────────────────────────────────── */
 :root {
-  --sl-color-accent-low: #dbeafe;
-  --sl-color-accent: #1e3a5f;
-  --sl-color-accent-high: #1e3a5f;
-  --sl-color-white: #ffffff;
-  --sl-color-gray-1: #f1f5f9;
-  --sl-color-gray-6: #1a1a2e;
+  --sl-color-accent-low:  #0d2545;   /* deep navy tint for subtle bg (badges, highlights) */
+  --sl-color-accent:      #3b82f6;   /* readable blue for links / interactive elements */
+  --sl-color-accent-high: #93c5fd;   /* light blue for accent text on dark backgrounds */
 }
 
+/* ── Light mode ───────────────────────────────────────────────────────────── */
+/* Must be at least as specific as :root and come after it so it wins.        */
+[data-theme='light'] {
+  --sl-color-accent-low:  #dbeafe;   /* pale blue tint */
+  --sl-color-accent:      #1d4ed8;   /* medium blue — passes 4.5:1 on white */
+  --sl-color-accent-high: #1e3a5f;   /* dark navy — passes 7:1 on white */
+}
+
+/* ── Logo ─────────────────────────────────────────────────────────────────── */
 .site-title img {
   height: 28px;
   width: auto;
