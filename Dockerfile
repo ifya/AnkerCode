@@ -72,7 +72,12 @@ COPY --from=scanner-dl /usr/local/bin/gitleaks /usr/local/bin/gitleaks
 # CLI (self-contained: dist/ + commander + @ankercode/core + @ankercode/report)
 COPY --from=builder /deploy /app
 
-RUN ln -s /app/dist/index.js /usr/local/bin/ankercode && \
+# Strip the shebang from the bundle — Node's ESM loader only recognises it on
+# line 1, but esbuild may inject a legal comment before the banner, pushing
+# the shebang to line 2 and causing a SyntaxError. We invoke via `node`
+# explicitly so the shebang serves no purpose here.
+RUN sed -i '/^#!/d' /app/dist/index.js && \
+    ln -s /app/dist/index.js /usr/local/bin/ankercode && \
     chmod +x /app/dist/index.js
 
 # CI convention: mount the repo here
