@@ -62,7 +62,7 @@ RUN GL_ARCH="$([ "$TARGETARCH" = "arm64" ] && echo arm64 || echo x64)" && \
 # git is needed at runtime: ankercode reads commit SHA + branch from the target repo.
 FROM node:22-alpine AS runtime
 
-RUN apk add --no-cache git ca-certificates pandoc wkhtmltopdf
+RUN apk add --no-cache git ca-certificates pandoc
 
 # Scanner binaries only — no curl, no build tools
 COPY --from=scanner-dl /usr/local/bin/syft     /usr/local/bin/syft
